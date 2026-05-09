@@ -5,13 +5,13 @@ Supports CUT, CycleGAN (ResnetGenerator), and StarGAN v2.
 Usage:
     # CUT / CycleGAN
     python scripts/inference.py --config configs/task1/cut/0.1T_to_7T_T1W.yaml \
-        --checkpoint $OUTPUT_DIR/task1_0.1T_to_7T_T1W/cut/retro_scratch/weights/generator_final.pth \
+        --checkpoint $OUTPUT_DIR/task1_0.1T_to_7T_T1W/cut/retro_scratch/weights/checkpoint_epoch100.pth \
         --input_dir $DATA_DIR/Validating_prospective/T1W/0.1T/ \
         --output_dir $INFERENCE_DIR/
 
     # StarGAN v2
-    python scripts/inference.py --config configs/task3/stargan/any_to_any_T1W.yaml \
-        --checkpoint $OUTPUT_DIR/task3_any_to_any_T1W/stargan/retro_scratch/weights/model_final.pth \
+    python scripts/inference.py --config configs/task3/stargan/any_to_any_all_modalities.yaml \
+        --checkpoint $OUTPUT_DIR/task3_any_to_any_multimodal/stargan_v2/retro_scratch/weights/checkpoint_500000.pth \
         --input_dir $DATA_DIR/Validating_prospective/T1W/0.1T/ \
         --output_dir $INFERENCE_DIR/ \
         --target_field 7T

@@ -38,6 +38,8 @@ dependencies:
     - SimpleITK>=2.2.0
     - six>=1.16.0
     - h5py>=3.0.0
+    - pandas>=2.0.0
+    - xlsxwriter>=3.0.0
 
     # --- MRIxFields package (editable install) ---
     # Requires running `conda env create` from the repo root directory.

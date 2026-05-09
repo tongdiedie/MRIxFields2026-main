@@ -146,38 +146,11 @@ reference/
 
 # Internal directories (not for public release)
 tools/
-Submission/docker/
+# Submission/docker/
+Submission/evaluation-2026/
 
-# 排除SynthSeg下的data/ext/models目录（不上传）
-SynthSeg/data/
-SynthSeg/ext/
-SynthSeg/models/
-
-# 可选：补充医学影像项目常见的忽略项（避免上传大文件）
-# 临时文件
-tmp/
-*.tmp
-*.temp
-
-# 医学影像文件（体积大，不上传）
-*.nii
-*.nii.gz
-*.hdr
-*.img
-
-# Python缓存
-__pycache__/
-*.py[cod]
-*$py.class
-
-# 环境配置
-.env
-.conda/
-venv/
-env/
-
-# 编辑器配置
-.vscode/
-.idea/
-*.swp
-*.swo
+# Submission packaging skeleton (demo 0-byte .nii.gz placeholders, ~108 files)
+# These are intentionally tracked to document the expected submission folder
+# layout. The global *.nii.gz rule above still blocks real volumes anywhere
+# else in the tree.
+!Submission/submission_pack/**/*.nii.gz

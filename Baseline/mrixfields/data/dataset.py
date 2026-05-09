@@ -21,7 +21,9 @@ from torch.utils.data import Dataset
 from .utils import (
     FIELD_STRENGTHS,
     FIELD_TO_DOMAIN,
+    MODALITIES,
     extract_subject_id,
+    get_joint_domain,
     list_nifti_files,
     load_nifti,
 )
@@ -208,8 +210,10 @@ class PairedMRIDataset(Dataset):
 class MultiDomainMRIDataset(Dataset):
     """Multi-domain dataset for StarGAN v2 (Task 3: Any -> Any).
 
-    Combines slices from all 5 field strengths with domain labels.
-    Each sample includes an image and its domain index.
+    Combines slices from all (modality, field_strength) combinations with a
+    flat domain label. When multiple modalities are provided, domain labels
+    use ``get_joint_domain`` (0..NUM_JOINT_DOMAINS-1). For a single modality,
+    labels fall back to ``FIELD_TO_DOMAIN`` (0..4) for backward compatibility.
 
     Data path: {data_root}/{split}/{modality}/{field_strength}/*.nii.gz
     """
@@ -218,7 +222,8 @@ class MultiDomainMRIDataset(Dataset):
         self,
         data_root: str | Path,
         split: str,
-        modality: str,
+        modality: Optional[str] = None,
+        modalities: Optional[List[str]] = None,
         field_strengths: Optional[List[str]] = None,
         transform: Optional[Callable] = None,
         crop_size: Optional[Tuple[int, int]] = None,
@@ -227,47 +232,55 @@ class MultiDomainMRIDataset(Dataset):
     ):
         self.data_root = Path(data_root)
         self.split = split
-        self.modality = modality
+        if modalities is not None:
+            self.modalities = list(modalities)
+        elif modality is not None:
+            self.modalities = [modality]
+        else:
+            self.modalities = list(MODALITIES)
         self.field_strengths = field_strengths or FIELD_STRENGTHS
         self.slice_axis = slice_axis
         self.min_slice_std = min_slice_std
         self.transform = transform or _default_transform(crop_size)
+        self._use_joint = len(self.modalities) > 1
 
-        # Index: list of (nifti_path, slice_index, domain_label)
-        self.samples: List[Tuple[Path, int, int]] = []
-        # Per-domain sample indices for reference-guided training
-        self.domain_samples: Dict[int, List[int]] = {
-            FIELD_TO_DOMAIN[fs]: [] for fs in self.field_strengths
-        }
-        # Reverse mapping: domain_idx -> field_strength string
-        self._domain_to_field: Dict[int, str] = {
-            FIELD_TO_DOMAIN[fs]: fs for fs in self.field_strengths
-        }
+        # Index: list of (nifti_path, slice_index, domain_label, modality, field_strength)
+        self.samples: List[Tuple[Path, int, int, str, str]] = []
+        self.domain_samples: Dict[int, List[int]] = {}
+        self._domain_to_pair: Dict[int, Tuple[str, str]] = {}
         self._index_data()
 
+    def _domain_label(self, modality: str, field_strength: str) -> int:
+        if self._use_joint:
+            return get_joint_domain(modality, field_strength)
+        return FIELD_TO_DOMAIN[field_strength]
+
     def _index_data(self):
-        for fs in self.field_strengths:
-            domain_idx = FIELD_TO_DOMAIN[fs]
-            nifti_files = list_nifti_files(
-                self.data_root, self.split, self.modality, fs
-            )
-            for nifti_path in nifti_files:
-                data, _ = load_nifti(nifti_path)
-                n_slices = data.shape[self.slice_axis]
-                for i in range(n_slices):
-                    slicing = [slice(None)] * data.ndim
-                    slicing[self.slice_axis] = i
-                    slc = data[tuple(slicing)]
-                    if slc.std() > self.min_slice_std:
-                        sample_idx = len(self.samples)
-                        self.samples.append((nifti_path, i, domain_idx))
-                        self.domain_samples[domain_idx].append(sample_idx)
+        for modality in self.modalities:
+            for fs in self.field_strengths:
+                domain_idx = self._domain_label(modality, fs)
+                self.domain_samples.setdefault(domain_idx, [])
+                self._domain_to_pair[domain_idx] = (modality, fs)
+                nifti_files = list_nifti_files(
+                    self.data_root, self.split, modality, fs
+                )
+                for nifti_path in nifti_files:
+                    data, _ = load_nifti(nifti_path)
+                    n_slices = data.shape[self.slice_axis]
+                    for i in range(n_slices):
+                        slicing = [slice(None)] * data.ndim
+                        slicing[self.slice_axis] = i
+                        slc = data[tuple(slicing)]
+                        if slc.std() > self.min_slice_std:
+                            sample_idx = len(self.samples)
+                            self.samples.append((nifti_path, i, domain_idx, modality, fs))
+                            self.domain_samples[domain_idx].append(sample_idx)
 
     def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, index: int) -> Dict:
-        nifti_path, slice_idx, domain_idx = self.samples[index]
+        nifti_path, slice_idx, domain_idx, modality, field_strength = self.samples[index]
         data, _ = load_nifti(nifti_path)
         slicing = [slice(None)] * data.ndim
         slicing[self.slice_axis] = slice_idx
@@ -278,9 +291,9 @@ class MultiDomainMRIDataset(Dataset):
         other_domains = [d for d in self.domain_samples if d != domain_idx
                          and len(self.domain_samples[d]) > 0]
         if other_domains:
-            ref_domain = np.random.choice(other_domains)
+            ref_domain = int(np.random.choice(other_domains))
             ref_idx = np.random.choice(self.domain_samples[ref_domain])
-            ref_path, ref_slice, _ = self.samples[ref_idx]
+            ref_path, ref_slice, _, _, _ = self.samples[ref_idx]
             ref_data, _ = load_nifti(ref_path)
             ref_slicing = [slice(None)] * ref_data.ndim
             ref_slicing[self.slice_axis] = ref_slice
@@ -294,8 +307,8 @@ class MultiDomainMRIDataset(Dataset):
             "domain": domain_idx,
             "ref_image": ref_slc,
             "ref_domain": ref_domain,
-            "field_strength": self._domain_to_field.get(domain_idx, ""),
-            "modality": self.modality,
+            "field_strength": field_strength,
+            "modality": modality,
             "filename": nifti_path.name,
             "slice_idx": slice_idx,
         }

@@ -7,7 +7,7 @@
 # Examples:
 #   bash run_inference.sh \
 #       configs/task1/cyclegan/0.1T_to_7T_T1W.yaml \
-#       $OUTPUT_DIR/task1_0.1T_to_7T_T1W/cyclegan/retro_scratch/weights/generator_final.pth \
+#       $OUTPUT_DIR/task1_0.1T_to_7T_T1W/cyclegan/retro_scratch/weights/checkpoint_epoch100.pth \
 #       $DATA_DIR/Testing_prospective/T1W/0.1T/ \
 #       $INFERENCE_DIR/task1_0.1T_to_7T_T1W/cyclegan/
 

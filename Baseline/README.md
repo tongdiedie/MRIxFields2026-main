@@ -78,21 +78,21 @@ python scripts/train.py \
 # Task 1 (CUT, 0.1T -> 7T)
 python scripts/inference.py \
     --config configs/task1/cut/0.1T_to_7T_T1W.yaml \
-    --checkpoint $OUTPUT_DIR/task1_0.1T_to_7T_T1W/cut/retro_scratch/weights/generator_final.pth \
+    --checkpoint $OUTPUT_DIR/task1_0.1T_to_7T_T1W/cut/retro_scratch/weights/checkpoint_epoch100.pth \
     --input_dir $DATA_DIR/Validating_prospective/T1W/0.1T/ \
     --output_dir $INFERENCE_DIR/
 
 # Task 2 (CycleGAN, 0.1T -> 3T)
 python scripts/inference.py \
     --config configs/task2/cyclegan/0.1T_to_3T_T1W.yaml \
-    --checkpoint $OUTPUT_DIR/task2_0.1T_to_3T_T1W/cyclegan/retro_scratch/weights/generator_final.pth \
+    --checkpoint $OUTPUT_DIR/task2_0.1T_to_3T_T1W/cyclegan/retro_scratch/weights/checkpoint_epoch100.pth \
     --input_dir $DATA_DIR/Validating_prospective/T1W/0.1T/ \
     --output_dir $INFERENCE_DIR/
 
 # Task 3 (StarGAN v2, 0.1T -> 7T — specify --target_field)
 python scripts/inference.py \
-    --config configs/task3/stargan/any_to_any_T1W.yaml \
-    --checkpoint $OUTPUT_DIR/task3_any_to_any_T1W/stargan_v2/retro_scratch/weights/model_final.pth \
+    --config configs/task3/stargan/any_to_any_all_modalities.yaml \
+    --checkpoint $OUTPUT_DIR/task3_any_to_any_multimodal/stargan_v2/retro_scratch/weights/checkpoint_500000.pth \
     --input_dir $DATA_DIR/Validating_prospective/T1W/0.1T/ \
     --output_dir $INFERENCE_DIR/ \
     --target_field 7T

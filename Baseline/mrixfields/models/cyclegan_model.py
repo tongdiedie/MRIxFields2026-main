@@ -184,6 +184,10 @@ class CycleGANModel(nn.Module):
         self.optimizer_G.zero_grad()
         loss_G = self.compute_G_loss(real_A, real_B)
         loss_G.backward()
+        torch.nn.utils.clip_grad_norm_(
+            itertools.chain(self.netG_AB.parameters(), self.netG_BA.parameters()),
+            max_norm=1.0,
+        )
         self.optimizer_G.step()
 
         # Update D
@@ -194,6 +198,10 @@ class CycleGANModel(nn.Module):
         self.optimizer_D.zero_grad()
         loss_D = self.compute_D_loss(real_A, real_B)
         loss_D.backward()
+        torch.nn.utils.clip_grad_norm_(
+            itertools.chain(self.netD_A.parameters(), self.netD_B.parameters()),
+            max_norm=1.0,
+        )
         self.optimizer_D.step()
 
         return {"loss_G": loss_G.item(), "loss_D": loss_D.item()}

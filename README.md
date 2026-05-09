@@ -229,11 +229,11 @@ See [Evaluation/](Evaluation/) for local evaluation scripts and SynthSeg setup.
 
 ### 6. Submit
 
-Submit your predictions as a zip file via [Synapse](https://www.synapse.org/Synapse:syn72060672).
+Submit **one zip per task** (`task1.zip` / `task2.zip` / `task3.zip`) via [Synapse](https://www.synapse.org/Synapse:syn72060672). Each zip's internal layout is `{modality}/{pair}/{pred|seg}/<file>.nii.gz`.
 
 See [Submission/](Submission/) for:
-- Directory structure and file naming rules
-- Output format requirements
+- Per-task zip layout and file naming rules
+- Packaging commands and starter template
 
 ---
 

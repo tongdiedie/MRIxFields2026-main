@@ -34,8 +34,26 @@ SPLIT_ABBR = {
 ABBR_TO_SPLIT = {v: k for k, v in SPLIT_ABBR.items()}
 SPLITS = list(SPLIT_ABBR.keys())  # for backward-compat / iteration
 
-# Domain index mapping for StarGAN v2
+# Domain index mapping for StarGAN v2 (single-modality: only 5 field strengths).
 FIELD_TO_DOMAIN = {fs: i for i, fs in enumerate(FIELD_STRENGTHS)}
+
+# Joint (modality, field) → domain mapping for multi-modality StarGAN v2 (Task 3).
+# Flat index: modality_idx * len(FIELD_STRENGTHS) + field_idx
+#   0-4:   T1W × {0.1T, 1.5T, 3T, 5T, 7T}
+#   5-9:   T2W × {0.1T, 1.5T, 3T, 5T, 7T}
+#   10-14: T2FLAIR × {0.1T, 1.5T, 3T, 5T, 7T}
+NUM_JOINT_DOMAINS = len(MODALITIES) * len(FIELD_STRENGTHS)
+
+
+def get_joint_domain(modality: str, field_strength: str) -> int:
+    """Map (modality, field_strength) to a flat domain index in [0, NUM_JOINT_DOMAINS)."""
+    return MODALITIES.index(modality) * len(FIELD_STRENGTHS) + FIELD_STRENGTHS.index(field_strength)
+
+
+def joint_domain_to_pair(domain: int) -> Tuple[str, str]:
+    """Inverse of get_joint_domain: flat index → (modality, field_strength)."""
+    m_idx, f_idx = divmod(domain, len(FIELD_STRENGTHS))
+    return MODALITIES[m_idx], FIELD_STRENGTHS[f_idx]
 
 # Task definitions
 TASK1_PAIRS = [(fs, "7T") for fs in FIELD_STRENGTHS if fs != "7T"]  # 4 pairs

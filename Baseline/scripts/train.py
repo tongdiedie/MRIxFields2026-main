@@ -99,7 +99,7 @@ def _iter_unpaired(loader_or_tuple, use_dist):
         yield from loader_or_tuple
 
 
-def train_cut(cfg: dict, device: torch.device, use_dist: bool = False):
+def train_cut(cfg: dict, device: torch.device, use_dist: bool = False, resume_ckpt: str = None):
     """Train CUT model for a specific field-strength pair."""
     model_cfg = cfg["model"]
     data_cfg = cfg["data"]
@@ -203,14 +203,31 @@ def train_cut(cfg: dict, device: torch.device, use_dist: bool = False):
     scheduler_F = torch.optim.lr_scheduler.LambdaLR(model.optimizer_F, lr_lambda)
 
     total_epochs = n_epochs + n_epochs_decay
+
+    # Resume from checkpoint (full state: model + optimizers + schedulers)
+    start_epoch = 0
+    if resume_ckpt:
+        ckpt = torch.load(resume_ckpt, map_location=device, weights_only=False)
+        model.load_state_dict(ckpt["model"])
+        if "optimizer_G" in ckpt:
+            model.optimizer_G.load_state_dict(ckpt["optimizer_G"])
+            model.optimizer_D.load_state_dict(ckpt["optimizer_D"])
+            model.optimizer_F.load_state_dict(ckpt["optimizer_F"])
+            scheduler_G.load_state_dict(ckpt["scheduler_G"])
+            scheduler_D.load_state_dict(ckpt["scheduler_D"])
+            scheduler_F.load_state_dict(ckpt["scheduler_F"])
+        start_epoch = ckpt.get("epoch", 0)
+        if is_main_process():
+            print(f"Resumed from {resume_ckpt} at epoch {start_epoch}")
+
     max_iters = train_cfg.get("max_iters_per_epoch", 0)
     if is_main_process():
         print(f"Training CUT: {source_field} -> {target_field}, "
-              f"{total_epochs} epochs, {loader_len} iters/epoch"
+              f"epochs {start_epoch+1}-{total_epochs}, {loader_len} iters/epoch"
               + (f" (capped at {max_iters})" if max_iters else "")
               + (f" (DDP: {world_size} GPUs)" if use_dist else ""))
 
-    for epoch in range(total_epochs):
+    for epoch in range(start_epoch, total_epochs):
         model.train()
         if use_dist:
             sampler_src.set_epoch(epoch)
@@ -235,13 +252,19 @@ def train_cut(cfg: dict, device: torch.device, use_dist: bool = False):
 
         if is_main_process() and (epoch + 1) % train_cfg.get("save_every", 10) == 0:
             ckpt = weights_dir / f"checkpoint_epoch{epoch+1}.pth"
-            net_G = model.netG.module if use_dist else model.netG
-            torch.save({"epoch": epoch + 1, "model": model.state_dict()}, ckpt)
+            torch.save({
+                "epoch": epoch + 1,
+                "model": model.state_dict(),
+                "optimizer_G": model.optimizer_G.state_dict(),
+                "optimizer_D": model.optimizer_D.state_dict(),
+                "optimizer_F": model.optimizer_F.state_dict(),
+                "scheduler_G": scheduler_G.state_dict(),
+                "scheduler_D": scheduler_D.state_dict(),
+                "scheduler_F": scheduler_F.state_dict(),
+            }, ckpt)
             print(f"Saved: {ckpt}")
 
     if is_main_process():
-        net_G = model.netG.module if use_dist else model.netG
-        torch.save(net_G.state_dict(), weights_dir / "generator_final.pth")
         print(f"CUT training complete. Saved to: {output_dir}")
 
 
@@ -249,7 +272,7 @@ def train_cut(cfg: dict, device: torch.device, use_dist: bool = False):
 #  CUT Fine-tuning (paired, supervised)
 # --------------------------------------------------------------------------- #
 
-def train_cut_finetune(cfg: dict, device: torch.device, use_dist: bool = False):
+def train_cut_finetune(cfg: dict, device: torch.device, use_dist: bool = False, resume_ckpt: str = None):
     """Phase 2 for CUT: fine-tune the pretrained ResnetGenerator with paired data.
 
     Discards CUT-specific structure (PatchNCE, discriminator, MLP head F) and
@@ -351,14 +374,27 @@ def train_cut_finetune(cfg: dict, device: torch.device, use_dist: bool = False):
     if lambda_edge > 0:
         criterion_edge = StructureLoss(ssim_weight=0.0, edge_weight=1.0).to(device)
 
+    # Resume from checkpoint (full state: generator + optimizer)
+    start_epoch = 0
+    if resume_ckpt:
+        ckpt = torch.load(resume_ckpt, map_location=device, weights_only=False)
+        gen_state = ckpt.get("generator", ckpt)
+        net = generator.module if use_dist else generator
+        net.load_state_dict(gen_state)
+        if "optimizer" in ckpt:
+            optimizer.load_state_dict(ckpt["optimizer"])
+        start_epoch = ckpt.get("epoch", 0)
+        if is_main_process():
+            print(f"Resumed CUT finetune from {resume_ckpt} at epoch {start_epoch}")
+
     max_iters = train_cfg.get("max_iters_per_epoch", 0) or finetune_cfg.get("max_iters_per_epoch", 0)
     if is_main_process():
         print(f"CUT fine-tuning: {data_cfg['source_field']} -> {data_cfg['target_field']}, "
-              f"{epochs} epochs, {len(loader)} iters/epoch"
+              f"epochs {start_epoch+1}-{epochs}, {len(loader)} iters/epoch"
               + (f" (capped at {max_iters})" if max_iters else "")
               + (f" (DDP: {world_size} GPUs)" if use_dist else ""))
 
-    for epoch in range(epochs):
+    for epoch in range(start_epoch, epochs):
         generator.train()
         if use_dist and sampler is not None:
             sampler.set_epoch(epoch)
@@ -395,11 +431,13 @@ def train_cut_finetune(cfg: dict, device: torch.device, use_dist: bool = False):
         if is_main_process() and (epoch + 1) % train_cfg.get("save_every", 10) == 0:
             ckpt = weights_dir / f"checkpoint_epoch{epoch+1}.pth"
             net_G = generator.module if use_dist else generator
-            torch.save({"epoch": epoch + 1, "generator": net_G.state_dict()}, ckpt)
+            torch.save({
+                "epoch": epoch + 1,
+                "generator": net_G.state_dict(),
+                "optimizer": optimizer.state_dict(),
+            }, ckpt)
 
     if is_main_process():
-        net_G = generator.module if use_dist else generator
-        torch.save(net_G.state_dict(), weights_dir / "generator_final.pth")
         print(f"CUT fine-tuning complete. Saved to: {output_dir}")
 
 
@@ -407,7 +445,7 @@ def train_cut_finetune(cfg: dict, device: torch.device, use_dist: bool = False):
 #  CycleGAN Training
 # --------------------------------------------------------------------------- #
 
-def train_cyclegan(cfg: dict, device: torch.device, use_dist: bool = False):
+def train_cyclegan(cfg: dict, device: torch.device, use_dist: bool = False, resume_ckpt: str = None):
     """Train CycleGAN model for a specific field-strength pair."""
     model_cfg = cfg["model"]
     data_cfg = cfg["data"]
@@ -491,14 +529,29 @@ def train_cyclegan(cfg: dict, device: torch.device, use_dist: bool = False):
     scheduler_D = torch.optim.lr_scheduler.LambdaLR(model.optimizer_D, lr_lambda)
 
     total_epochs = n_epochs + n_epochs_decay
+
+    # Resume from checkpoint (full state: model + optimizers + schedulers)
+    start_epoch = 0
+    if resume_ckpt:
+        ckpt = torch.load(resume_ckpt, map_location=device, weights_only=False)
+        model.load_state_dict(ckpt["model"])
+        if "optimizer_G" in ckpt:
+            model.optimizer_G.load_state_dict(ckpt["optimizer_G"])
+            model.optimizer_D.load_state_dict(ckpt["optimizer_D"])
+            scheduler_G.load_state_dict(ckpt["scheduler_G"])
+            scheduler_D.load_state_dict(ckpt["scheduler_D"])
+        start_epoch = ckpt.get("epoch", 0)
+        if is_main_process():
+            print(f"Resumed from {resume_ckpt} at epoch {start_epoch}")
+
     max_iters = train_cfg.get("max_iters_per_epoch", 0)
     if is_main_process():
         print(f"Training CycleGAN: {domain_a} <-> {domain_b}, "
-              f"{total_epochs} epochs, {loader_len} iters/epoch"
+              f"epochs {start_epoch+1}-{total_epochs}, {loader_len} iters/epoch"
               + (f" (capped at {max_iters})" if max_iters else "")
               + (f" (DDP: {world_size} GPUs)" if use_dist else ""))
 
-    for epoch in range(total_epochs):
+    for epoch in range(start_epoch, total_epochs):
         model.train()
         if use_dist:
             sampler_src.set_epoch(epoch)
@@ -522,15 +575,17 @@ def train_cyclegan(cfg: dict, device: torch.device, use_dist: bool = False):
 
         if is_main_process() and (epoch + 1) % train_cfg.get("save_every", 10) == 0:
             ckpt = weights_dir / f"checkpoint_epoch{epoch+1}.pth"
-            torch.save({"epoch": epoch + 1, "model": model.state_dict()}, ckpt)
+            torch.save({
+                "epoch": epoch + 1,
+                "model": model.state_dict(),
+                "optimizer_G": model.optimizer_G.state_dict(),
+                "optimizer_D": model.optimizer_D.state_dict(),
+                "scheduler_G": scheduler_G.state_dict(),
+                "scheduler_D": scheduler_D.state_dict(),
+            }, ckpt)
             print(f"Saved: {ckpt}")
 
     if is_main_process():
-        net_G_AB = model.netG_AB.module if use_dist else model.netG_AB
-        net_G_BA = model.netG_BA.module if use_dist else model.netG_BA
-        torch.save(net_G_AB.state_dict(), weights_dir / "generator_AB_final.pth")
-        torch.save(net_G_BA.state_dict(), weights_dir / "generator_BA_final.pth")
-        torch.save(net_G_AB.state_dict(), weights_dir / "generator_final.pth")
         print(f"CycleGAN training complete. Saved to: {output_dir}")
 
 
@@ -538,7 +593,7 @@ def train_cyclegan(cfg: dict, device: torch.device, use_dist: bool = False):
 #  CycleGAN Fine-tuning (paired, supervised)
 # --------------------------------------------------------------------------- #
 
-def train_cyclegan_finetune(cfg: dict, device: torch.device, use_dist: bool = False):
+def train_cyclegan_finetune(cfg: dict, device: torch.device, use_dist: bool = False, resume_ckpt: str = None):
     """Phase 2 for CycleGAN: fine-tune the pretrained ResnetGenerator with paired data.
 
     Discards CycleGAN-specific structure (cycle loss, identity loss, dual G/D)
@@ -640,14 +695,27 @@ def train_cyclegan_finetune(cfg: dict, device: torch.device, use_dist: bool = Fa
     if lambda_edge > 0:
         criterion_edge = StructureLoss(ssim_weight=0.0, edge_weight=1.0).to(device)
 
+    # Resume from checkpoint (full state: generator + optimizer)
+    start_epoch = 0
+    if resume_ckpt:
+        ckpt = torch.load(resume_ckpt, map_location=device, weights_only=False)
+        gen_state = ckpt.get("generator", ckpt)
+        net = generator.module if use_dist else generator
+        net.load_state_dict(gen_state)
+        if "optimizer" in ckpt:
+            optimizer.load_state_dict(ckpt["optimizer"])
+        start_epoch = ckpt.get("epoch", 0)
+        if is_main_process():
+            print(f"Resumed CycleGAN finetune from {resume_ckpt} at epoch {start_epoch}")
+
     max_iters = train_cfg.get("max_iters_per_epoch", 0) or finetune_cfg.get("max_iters_per_epoch", 0)
     if is_main_process():
         print(f"CycleGAN fine-tuning: {data_cfg['source_field']} -> {data_cfg['target_field']}, "
-              f"{epochs} epochs, {len(loader)} iters/epoch"
+              f"epochs {start_epoch+1}-{epochs}, {len(loader)} iters/epoch"
               + (f" (capped at {max_iters})" if max_iters else "")
               + (f" (DDP: {world_size} GPUs)" if use_dist else ""))
 
-    for epoch in range(epochs):
+    for epoch in range(start_epoch, epochs):
         generator.train()
         if use_dist and sampler is not None:
             sampler.set_epoch(epoch)
@@ -684,11 +752,13 @@ def train_cyclegan_finetune(cfg: dict, device: torch.device, use_dist: bool = Fa
         if is_main_process() and (epoch + 1) % train_cfg.get("save_every", 10) == 0:
             ckpt = weights_dir / f"checkpoint_epoch{epoch+1}.pth"
             net_G = generator.module if use_dist else generator
-            torch.save({"epoch": epoch + 1, "generator": net_G.state_dict()}, ckpt)
+            torch.save({
+                "epoch": epoch + 1,
+                "generator": net_G.state_dict(),
+                "optimizer": optimizer.state_dict(),
+            }, ckpt)
 
     if is_main_process():
-        net_G = generator.module if use_dist else generator
-        torch.save(net_G.state_dict(), weights_dir / "generator_final.pth")
         print(f"CycleGAN fine-tuning complete. Saved to: {output_dir}")
 
 
@@ -729,7 +799,7 @@ def train_stargan(cfg: dict, device: torch.device, use_dist: bool = False,
         for key in nets:
             nets[key] = DDP(nets[key], device_ids=[device])
 
-    modality = data_cfg["modalities"][0]
+    modalities = data_cfg.get("modalities") or []
     crop_size_raw = data_cfg.get("crop_size")
     crop_size = tuple(crop_size_raw) if crop_size_raw else None
     preprocessed_dir = data_cfg.get("preprocessed_dir")
@@ -738,13 +808,13 @@ def train_stargan(cfg: dict, device: torch.device, use_dist: bool = False,
     if preprocessed_dir:
         dataset = CachedMultiDomainDataset(
             preprocessed_dir=preprocessed_dir, split=split,
-            modality=modality, field_strengths=domains, crop_size=crop_size,
+            modalities=modalities, field_strengths=domains, crop_size=crop_size,
         )
     else:
         split_full = SPLIT_MAP.get(split, split)
         dataset = MultiDomainMRIDataset(
             data_root=data_cfg["data_dir"], split=split_full,
-            modality=modality, field_strengths=domains, crop_size=crop_size,
+            modalities=modalities, field_strengths=domains, crop_size=crop_size,
         )
 
     batch_size = train_cfg.get("batch_size", 4)
@@ -916,14 +986,11 @@ def train_stargan(cfg: dict, device: torch.device, use_dist: bool = False,
                 print(f"Saved: {ckpt}")
 
     if is_main_process():
-        torch.save({
-            "nets": {k: v.state_dict() for k, v in _unwrap(nets).items()},
-            "nets_ema": {k: v.state_dict() for k, v in nets_ema.items()},
-        }, weights_dir / "model_final.pth")
         print(f"StarGAN v2 training complete. Saved to: {output_dir}")
 
 
-def train_stargan_finetune(cfg: dict, device: torch.device, use_dist: bool = False):
+def train_stargan_finetune(cfg: dict, device: torch.device, use_dist: bool = False,
+                           resume_ckpt: str = None):
     """Fine-tune pretrained StarGAN v2 with paired data (L1 + LPIPS).
 
     Uses prospective paired data to supervise the multi-domain generator.
@@ -953,9 +1020,12 @@ def train_stargan_finetune(cfg: dict, device: torch.device, use_dist: bool = Fal
         input_nc=model_cfg.get("input_nc", 1),
     )
 
-    # Load pretrained weights
+    # Load pretrained weights (skipped when resuming — resume_ckpt will overwrite below)
     pretrain_ckpt = cfg.get("pretrain", {}).get("checkpoint")
-    if pretrain_ckpt:
+    if resume_ckpt:
+        if is_main_process():
+            print(f"Resume requested ({resume_ckpt}); skipping pretrain checkpoint load")
+    elif pretrain_ckpt:
         state_dict = torch.load(pretrain_ckpt, map_location=device, weights_only=True)
         if "nets_ema" in state_dict:
             for k in nets_ema:
@@ -982,39 +1052,45 @@ def train_stargan_finetune(cfg: dict, device: torch.device, use_dist: bool = Fal
         for key in nets:
             nets[key] = DDP(nets[key], device_ids=[device])
 
-    # Build paired datasets for all domain combinations
-    from mrixfields.data.utils import FIELD_TO_DOMAIN
-    modality = data_cfg["modalities"][0]
+    # Build paired datasets for all (modality, src_field, tgt_field) combinations.
+    # Only same-modality pairs are used (cross-modality pairing is not defined).
+    from mrixfields.data.utils import FIELD_TO_DOMAIN, get_joint_domain
+    modalities = data_cfg.get("modalities") or []
+    use_joint = len(modalities) > 1
     crop_size_raw = data_cfg.get("crop_size")
     crop_size = tuple(crop_size_raw) if crop_size_raw else None
     preprocessed_dir = data_cfg.get("preprocessed_dir")
     split = train_cfg.get("split") or finetune_cfg.get("split", "pro_train")
 
+    def _domain_label(modality: str, fs: str) -> int:
+        return get_joint_domain(modality, fs) if use_joint else FIELD_TO_DOMAIN[fs]
+
     all_pairs = []
-    for src_fs in domains:
-        for tgt_fs in domains:
-            if src_fs == tgt_fs:
-                continue
-            try:
-                if preprocessed_dir:
-                    ds = CachedPairedDataset(
-                        preprocessed_dir=preprocessed_dir, split=split,
-                        modality=modality, source_field=src_fs,
-                        target_field=tgt_fs, crop_size=crop_size,
-                    )
-                else:
-                    split_full = SPLIT_MAP.get(split, split)
-                    ds = PairedMRIDataset(
-                        data_root=data_cfg["data_dir"], split=split_full,
-                        modality=modality, source_field=src_fs,
-                        target_field=tgt_fs, crop_size=crop_size,
-                    )
-                all_pairs.append((src_fs, tgt_fs, ds))
-            except (FileNotFoundError, ValueError):
-                continue
+    for modality in modalities:
+        for src_fs in domains:
+            for tgt_fs in domains:
+                if src_fs == tgt_fs:
+                    continue
+                try:
+                    if preprocessed_dir:
+                        ds = CachedPairedDataset(
+                            preprocessed_dir=preprocessed_dir, split=split,
+                            modality=modality, source_field=src_fs,
+                            target_field=tgt_fs, crop_size=crop_size,
+                        )
+                    else:
+                        split_full = SPLIT_MAP.get(split, split)
+                        ds = PairedMRIDataset(
+                            data_root=data_cfg["data_dir"], split=split_full,
+                            modality=modality, source_field=src_fs,
+                            target_field=tgt_fs, crop_size=crop_size,
+                        )
+                    all_pairs.append((modality, src_fs, tgt_fs, ds))
+                except (FileNotFoundError, ValueError):
+                    continue
 
     if not all_pairs:
-        raise FileNotFoundError("No paired data found for any domain combination")
+        raise FileNotFoundError("No paired data found for any (modality, src, tgt) combination")
 
     # Combine all pairs into one dataset with domain labels
     from torch.utils.data import ConcatDataset
@@ -1034,10 +1110,13 @@ def train_stargan_finetune(cfg: dict, device: torch.device, use_dist: bool = Fal
             return batch
 
     wrapped = []
-    for src_fs, tgt_fs, ds in all_pairs:
-        wrapped.append(_PairedWithDomains(ds, FIELD_TO_DOMAIN[src_fs], FIELD_TO_DOMAIN[tgt_fs]))
+    for modality, src_fs, tgt_fs, ds in all_pairs:
+        src_d = _domain_label(modality, src_fs)
+        tgt_d = _domain_label(modality, tgt_fs)
+        wrapped.append(_PairedWithDomains(ds, src_d, tgt_d))
         if is_main_process():
-            print(f"  Paired data: {src_fs}→{tgt_fs}: {len(ds)} samples")
+            print(f"  Paired data: {modality} {src_fs}→{tgt_fs} "
+                  f"(domain {src_d}→{tgt_d}): {len(ds)} samples")
     combined_dataset = ConcatDataset(wrapped)
 
     batch_size = train_cfg.get("batch_size", 4)
@@ -1085,11 +1164,28 @@ def train_stargan_finetune(cfg: dict, device: torch.device, use_dist: bool = Fal
     def _unwrap(d):
         return {k: (v.module if use_dist else v) for k, v in d.items()}
 
+    # Resume from finetune checkpoint (overrides pretrain init)
+    start_epoch = 0
+    if resume_ckpt:
+        ckpt = torch.load(resume_ckpt, map_location=device, weights_only=True)
+        nets_unwrap = _unwrap(nets)
+        if "nets" in ckpt:
+            for k in nets_unwrap:
+                if k in ckpt["nets"]:
+                    nets_unwrap[k].load_state_dict(ckpt["nets"][k])
+        if "nets_ema" in ckpt:
+            for k in nets_ema:
+                if k in ckpt["nets_ema"]:
+                    nets_ema[k].load_state_dict(ckpt["nets_ema"][k])
+        start_epoch = ckpt.get("epoch", 0)
+        if is_main_process():
+            print(f"Resumed StarGAN v2 finetune from {resume_ckpt} at epoch {start_epoch}")
+
     if is_main_process():
         print(f"StarGAN v2 fine-tuning: {len(all_pairs)} pairs, {len(combined_dataset)} samples, "
-              f"{epochs} epochs" + (f" (DDP: {world_size} GPUs)" if use_dist else ""))
+              f"epochs {start_epoch+1}-{epochs}" + (f" (DDP: {world_size} GPUs)" if use_dist else ""))
 
-    for epoch in range(epochs):
+    for epoch in range(start_epoch, epochs):
         if use_dist and sampler is not None:
             sampler.set_epoch(epoch)
         nets["generator"].train()
@@ -1141,10 +1237,6 @@ def train_stargan_finetune(cfg: dict, device: torch.device, use_dist: bool = Fal
             }, ckpt)
 
     if is_main_process():
-        torch.save({
-            "nets": {k: v.state_dict() for k, v in _unwrap(nets).items()},
-            "nets_ema": {k: v.state_dict() for k, v in nets_ema.items()},
-        }, weights_dir / "model_final.pth")
         print(f"StarGAN v2 fine-tuning complete. Saved to: {output_dir}")
 
 
@@ -1264,7 +1356,7 @@ def main():
     parser.add_argument("--pretrain_ckpt", type=str, default=None,
                         help="Path to pretrained generator checkpoint (skip pretrain step)")
     parser.add_argument("--resume", type=str, default=None,
-                        help="Path to checkpoint to resume training (StarGAN v2 only)")
+                        help="Path to checkpoint to resume training (CUT / CycleGAN / StarGAN v2)")
     parser.add_argument("--device", type=str, default="cuda", help="Device (cuda/cpu)")
     parser.add_argument("--dist", action="store_true",
                         help="Enable distributed training (use with torchrun)")
@@ -1318,6 +1410,32 @@ def main():
         print(f"Output: {output_base}")
         _save_actual_config(cfg, output_base)
 
+    # Auto-detect resume checkpoint if not explicitly specified.
+    # Matches both epoch-based (checkpoint_epoch{N}.pth) and step-based
+    # (checkpoint_{step}.pth, used by StarGAN v2 pretrain) naming.
+    if args.resume is None:
+        weights_dir = output_base / "weights"
+        if weights_dir.exists():
+            def _ckpt_num(p):
+                suffix = p.stem[len("checkpoint_"):]
+                if suffix.startswith("epoch"):
+                    suffix = suffix[len("epoch"):]
+                try:
+                    return int(suffix)
+                except ValueError:
+                    return None
+
+            numbered = []
+            for p in weights_dir.glob("checkpoint_*.pth"):
+                n = _ckpt_num(p)
+                if n is not None:
+                    numbered.append((n, p))
+            numbered.sort()
+            if numbered:
+                args.resume = str(numbered[-1][1])
+                if is_main_process():
+                    print(f"Auto-resume detected: {args.resume}")
+
     # ------------------------------------------------------------------ #
     #  Mode: retro_scratch — pretrain only (unpaired, retrospective data)
     # ------------------------------------------------------------------ #
@@ -1326,9 +1444,9 @@ def main():
         pretrain_run_cfg = _build_pretrain_cfg(cfg, output_dir)
 
         if method == "cut":
-            train_cut(pretrain_run_cfg, device, use_dist)
+            train_cut(pretrain_run_cfg, device, use_dist, resume_ckpt=args.resume)
         elif method == "cyclegan":
-            train_cyclegan(pretrain_run_cfg, device, use_dist)
+            train_cyclegan(pretrain_run_cfg, device, use_dist, resume_ckpt=args.resume)
         elif method == "stargan_v2":
             train_stargan(pretrain_run_cfg, device, use_dist, resume_ckpt=args.resume)
         else:
@@ -1341,9 +1459,11 @@ def main():
         pretrain_ckpt = args.pretrain_ckpt
         if pretrain_ckpt is None:
             if method == "stargan_v2":
-                default_ckpt = output_base.parent / "retro_scratch" / "weights" / "model_final.pth"
+                pretrain_step = cfg.get("finetune", {}).get("pretrain_step", 500000)
+                default_ckpt = output_base.parent / "retro_scratch" / "weights" / f"checkpoint_{pretrain_step}.pth"
             else:
-                default_ckpt = output_base.parent / "retro_scratch" / "weights" / "generator_final.pth"
+                pretrain_epoch = cfg.get("finetune", {}).get("pretrain_epoch", 100)
+                default_ckpt = output_base.parent / "retro_scratch" / "weights" / f"checkpoint_epoch{pretrain_epoch}.pth"
             if not default_ckpt.exists():
                 raise FileNotFoundError(
                     f"No pretrain checkpoint found at {default_ckpt}. "
@@ -1355,13 +1475,13 @@ def main():
 
         if method == "stargan_v2":
             ft_run_cfg = _build_stargan_finetune_cfg(cfg, str(output_base), pretrain_ckpt)
-            train_stargan_finetune(ft_run_cfg, device, use_dist)
+            train_stargan_finetune(ft_run_cfg, device, use_dist, resume_ckpt=args.resume)
         elif method == "cut":
             ft_run_cfg = _build_finetune_cfg(cfg, str(output_base), pretrain_ckpt)
-            train_cut_finetune(ft_run_cfg, device, use_dist)
+            train_cut_finetune(ft_run_cfg, device, use_dist, resume_ckpt=args.resume)
         elif method == "cyclegan":
             ft_run_cfg = _build_finetune_cfg(cfg, str(output_base), pretrain_ckpt)
-            train_cyclegan_finetune(ft_run_cfg, device, use_dist)
+            train_cyclegan_finetune(ft_run_cfg, device, use_dist, resume_ckpt=args.resume)
         else:
             raise ValueError(f"Unknown method for pro_pretrained: {method}")
 
@@ -1373,13 +1493,13 @@ def main():
             print("Mode=pro_scratch: training from random initialization (no pretrain checkpoint)")
         if method == "stargan_v2":
             ft_run_cfg = _build_stargan_finetune_cfg(cfg, str(output_base), None)
-            train_stargan_finetune(ft_run_cfg, device, use_dist)
+            train_stargan_finetune(ft_run_cfg, device, use_dist, resume_ckpt=args.resume)
         elif method == "cut":
             ft_run_cfg = _build_finetune_cfg(cfg, str(output_base), None)
-            train_cut_finetune(ft_run_cfg, device, use_dist)
+            train_cut_finetune(ft_run_cfg, device, use_dist, resume_ckpt=args.resume)
         elif method == "cyclegan":
             ft_run_cfg = _build_finetune_cfg(cfg, str(output_base), None)
-            train_cyclegan_finetune(ft_run_cfg, device, use_dist)
+            train_cyclegan_finetune(ft_run_cfg, device, use_dist, resume_ckpt=args.resume)
         else:
             raise ValueError(f"Unknown method for pro_scratch: {method}")
 

@@ -262,8 +262,23 @@ def run_extract_slices(args):
                     nifti_files = nifti_files[:1]  # 1 case only
 
                 desc = f"{abbr}/{mod}/{field}"
+                n_expected = SLICE_END - SLICE_START
                 for nifti_path in tqdm(nifti_files, desc=desc, leave=False):
                     subject_id = _extract_subject_id(nifti_path.name)
+
+                    if args.skip_existing:
+                        existing = list(out_subdir.glob(f"{abbr}_{mod}_{field}_{subject_id}_s*.npz"))
+                        if len(existing) == n_expected:
+                            all_meta.append({
+                                "subject_id": subject_id,
+                                "source_file": nifti_path.name,
+                                "n_slices": n_expected,
+                                "shape": None,
+                                "skipped": True,
+                            })
+                            total_volumes += 1
+                            total_slices += n_expected
+                            continue
 
                     meta = extract_slices_from_volume(
                         nifti_path=nifti_path,
@@ -333,6 +348,8 @@ def main():
                            help="Field strengths (default: all 5)")
     p_extract.add_argument("--debug", action="store_true",
                            help="Debug: 1 case per group, save PNG visualization")
+    p_extract.add_argument("--skip_existing", action="store_true",
+                           help="Skip subjects whose full set of 220 slices already exists in output_dir.")
 
     args = parser.parse_args()
     if args.mode == "resample":

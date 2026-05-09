@@ -24,7 +24,7 @@ import torch
 from torch.utils.data import Dataset
 
 from .transforms import CenterCropOrPad, ToTensor, ScaleToMinusOneOne, Compose
-from .utils import FIELD_STRENGTHS, FIELD_TO_DOMAIN
+from .utils import FIELD_STRENGTHS, FIELD_TO_DOMAIN, MODALITIES, get_joint_domain
 
 
 def _cached_transform(crop_size: Optional[Tuple[int, int]] = None) -> Compose:
@@ -166,46 +166,63 @@ class CachedMultiDomainDataset(Dataset):
     """Multi-domain 2D slice dataset from preprocessed npz for StarGAN v2.
 
     Returns: image + domain label + reference image from a different domain.
+
+    Supports multi-modality training. When multiple modalities are provided,
+    domain labels use ``get_joint_domain`` (0..14 for 3 modalities × 5 fields).
+    For a single modality, labels fall back to ``FIELD_TO_DOMAIN`` (0..4).
     """
 
     def __init__(
         self,
         preprocessed_dir: str | Path,
         split: str,
-        modality: str,
+        modality: Optional[str] = None,
+        modalities: Optional[List[str]] = None,
         field_strengths: List[str] = None,
         crop_size: Optional[Tuple[int, int]] = None,
         transform: Optional[Callable] = None,
     ):
         self.preprocessed_dir = Path(preprocessed_dir)
+        if modalities is not None:
+            self.modalities = list(modalities)
+        elif modality is not None:
+            self.modalities = [modality]
+        else:
+            self.modalities = list(MODALITIES)
         self.field_strengths = field_strengths or FIELD_STRENGTHS
         self.transform = transform or _cached_transform(crop_size)
+        self._use_joint = len(self.modalities) > 1
 
         # Index files per domain
         self.domain_files: Dict[int, List[Path]] = {}
-        self.samples: List[Tuple[Path, int]] = []  # (npz_path, domain_idx)
+        self.samples: List[Tuple[Path, int, str, str]] = []  # (npz_path, domain_idx, modality, field_strength)
+        self._domain_to_pair: Dict[int, Tuple[str, str]] = {}
 
-        self._domain_to_field: Dict[int, str] = {}
-
-        for fs in self.field_strengths:
-            domain_idx = FIELD_TO_DOMAIN[fs]
-            files = _list_npz_files(self.preprocessed_dir, split, modality, fs)
-            if files:
-                self.domain_files[domain_idx] = files
-                self._domain_to_field[domain_idx] = fs
-                for f in files:
-                    self.samples.append((f, domain_idx))
+        for modality_name in self.modalities:
+            for fs in self.field_strengths:
+                domain_idx = (
+                    get_joint_domain(modality_name, fs) if self._use_joint
+                    else FIELD_TO_DOMAIN[fs]
+                )
+                files = _list_npz_files(self.preprocessed_dir, split, modality_name, fs)
+                if files:
+                    self.domain_files.setdefault(domain_idx, []).extend(files)
+                    self._domain_to_pair[domain_idx] = (modality_name, fs)
+                    for f in files:
+                        self.samples.append((f, domain_idx, modality_name, fs))
 
         if not self.samples:
+            where = self.preprocessed_dir / split
             raise FileNotFoundError(
-                f"No npz files found in {self.preprocessed_dir / split / modality}"
+                f"No npz files found under {where} for modalities={self.modalities}, "
+                f"fields={self.field_strengths}"
             )
 
     def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, index: int) -> Dict:
-        npz_path, domain_idx = self.samples[index]
+        npz_path, domain_idx, modality_name, field_strength = self.samples[index]
         image = np.load(npz_path)["image"]
 
         # Sample reference from a different domain
@@ -224,7 +241,8 @@ class CachedMultiDomainDataset(Dataset):
         return {
             "image": image,
             "domain": domain_idx,
-            "field_strength": self._domain_to_field.get(domain_idx, ""),
+            "field_strength": field_strength,
+            "modality": modality_name,
             "ref_image": ref_image,
             "ref_domain": ref_domain,
         }
