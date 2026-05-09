@@ -154,3 +154,5 @@ Submission/evaluation-2026/
 # layout. The global *.nii.gz rule above still blocks real volumes anywhere
 # else in the tree.
 !Submission/submission_pack/**/*.nii.gz
+
+MRIxFields2026_Data/
