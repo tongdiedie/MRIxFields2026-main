@@ -23,7 +23,7 @@ data:
   slice_axis: 2
 pretrain:
   split: retro_train
-  batch_size: 8
+  batch_size: 4 # 8
   num_workers: 4
   total_iters: 200000
   lr: 0.0001
@@ -41,7 +41,7 @@ pretrain:
   print_every: 1000
 finetune:
   split: pro_train
-  batch_size: 8
+  batch_size: 4 # 8
   num_workers: 4
   lr: 5.0e-05
   beta1: 0.5
