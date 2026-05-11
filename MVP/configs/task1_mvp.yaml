@@ -1,0 +1,39 @@
+# Task 1: 0.1T/1.5T/3T/5T -> 7T.
+seed: 2026
+device: cuda
+output_dir: ./MVP/runs/task1_mvp
+# You may override these with --manifest in scripts/train_translator.py.
+train_manifests:
+  - ./MVP/work/manifests/task1_real_train.csv
+  - ./MVP/work/synthetic_task1/synthetic_manifest_task1.csv
+val_manifests: []
+batch_size: 1
+num_workers: 4
+epochs: 100
+save_every: 10
+lr: 2.0e-4
+weight_decay: 1.0e-4
+amp: true
+model:
+  in_ch: 1
+  out_ch: 1
+  base_ch: 16
+  levels: 4
+  cond_dim: 128
+  use_coords: true
+  dropout: 0.0
+data:
+  # [D,H,W]. For a stronger but heavier 3D run, try [96,96,96].
+  # For a 2.5D-like run, try [16,192,192].
+  patch_size: [64, 96, 96]
+  samples_per_volume: 8
+  val_samples_per_volume: 1
+  cache_items: 4
+  foreground_prob: 0.8
+loss:
+  l1: 1.0
+  nrmse: 0.50
+  ssim: 0.20
+  lpips: 0.02
+loss_slice_axis: 2
+lpips_net: alex

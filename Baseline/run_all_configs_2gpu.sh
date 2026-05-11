@@ -362,7 +362,8 @@ run_one() {
         --nnodes=1
         --nproc_per_node="${NPROC}"
         --master_port="${MASTER_PORT}"
-        scripts/train.py
+        # scripts/train.py  # 修改
+        scripts/train_with_eta.py
         --config "${cfg}"
         --mode "${mode}"
         --dist

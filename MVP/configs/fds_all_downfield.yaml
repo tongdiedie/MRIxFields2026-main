@@ -1,0 +1,42 @@
+# Train a single degradation simulator P(high field -> lower field).
+# Use this for Task 1/2 synthetic paired data and Task 3 downfield targets.
+seed: 2026
+device: cuda
+output_dir: ./MVP/runs/fds_all_downfield
+train_split: Training_prospective
+# Optional; set to Validating_prospective only for local debugging if you have GT.
+val_split: null
+modalities: [T1W, T2W, T2FLAIR]
+# All high -> low field combinations. You can shorten this for a faster first run.
+fds_pairs:
+  - [1.5T, 0.1T]
+  - [3T, 0.1T]
+  - [3T, 1.5T]
+  - [5T, 0.1T]
+  - [5T, 1.5T]
+  - [5T, 3T]
+  - [7T, 0.1T]
+  - [7T, 1.5T]
+  - [7T, 3T]
+  - [7T, 5T]
+patch_size: [64, 96, 96]
+samples_per_volume: 6
+val_samples_per_volume: 1
+foreground_prob: 0.8
+cache_items: 4
+batch_size: 1
+num_workers: 4
+epochs: 50
+lr: 2.0e-4
+weight_decay: 1.0e-4
+amp: true
+fds:
+  cond_dim: 128
+  residual_ch: 16
+  use_coords: true
+  sigmas: [0.35, 0.70, 1.10, 1.60, 2.30]
+loss:
+  l1: 1.0
+  nrmse: 0.25
+  ssim: 0.10
+  lpips: 0.0

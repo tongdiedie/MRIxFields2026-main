@@ -1,0 +1,8 @@
+# The official mf conda environment already includes these packages.
+torch
+numpy
+nibabel
+pyyaml
+tqdm
+scikit-image
+lpips
